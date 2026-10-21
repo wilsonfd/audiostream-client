@@ -183,10 +183,10 @@ class StreamManager: ObservableObject {
         // 每 200ms 检查一次缓冲余量
         watchDogTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self = self, let player = self.playerNode, player.isPlaying,
-                  let fmt = self.targetFormat, let engine = self.engine else { return }
-            // 已消耗的帧数
-            guard let now = engine.renderTime,
-                  let pt = player.playerTime(for: now) else { return }
+                  let fmt = self.targetFormat else { return }
+            // 已消耗的帧数：用 playerNode 自己的 lastRenderTime
+            guard let nodeTime = player.lastRenderTime,
+                  let pt = player.playerTime(for: nodeTime) else { return }
             let inFlight = self.enqueuedFrames - pt.sampleTime
             let inFlightMs = Double(inFlight) / fmt.sampleRate * 1000.0
 
