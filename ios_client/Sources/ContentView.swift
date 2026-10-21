@@ -40,7 +40,7 @@ struct ContentView: View {
                             Text(m.rawValue).tag(m)
                         }
                     }
-                    .onChange(of: latencyMode) { _, new in
+                    .onChange(of: latencyMode) { new in
                         manager.latencyMode = new
                         UserDefaults.standard.set(new.rawValue, forKey: "latency_mode")
                     }
