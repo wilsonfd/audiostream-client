@@ -274,29 +274,29 @@ class StreamManager: ObservableObject {
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: fmt)
         engine.mainMixerNode.outputVolume = 1.0
+
+        // 实时电平 tap：必须在 engine.start() 之前安装
+        let mixer = engine.mainMixerNode
+        let tapFmt = mixer.outputFormat(forBus: 0)
+        var lastPush = Date.distantPast
+        mixer.installTap(onBus: 0, bufferSize: 512, format: tapFmt) { buf, _ in
+            guard let ch = buf.floatChannelData?[0] else { return }
+            let n = Int(buf.frameLength)
+            guard n > 0 else { return }
+            var sum: Float = 0
+            for i in 0..<n { sum += ch[i] * ch[i] }
+            let rms = sqrtf(sum / Float(n))
+            let v = min(1.0, rms * 3.0)
+            if Date().timeIntervalSince(lastPush) > 0.05 {
+                lastPush = Date()
+                DispatchQueue.main.async { self.level = v }
+            }
+        }
+
         do {
             try engine.start()
             self.engine = engine
             self.playerNode = player
-            // 实时电平：从 mixer 输出 tap，算 RMS 驱动外圈波形
-            let mixer = engine.mainMixerNode
-            let tapFmt = mixer.outputFormat(forBus: 0)
-            var lastPush = Date.distantPast
-            mixer.removeTap(onBus: 0)
-            mixer.installTap(onBus: 0, bufferSize: 512, format: tapFmt) { buf, _ in
-                guard let ch = buf.floatChannelData?[0] else { return }
-                let n = Int(buf.frameLength)
-                guard n > 0 else { return }
-                var sum: Float = 0
-                for i in 0..<n { sum += ch[i] * ch[i] }
-                let rms = sqrtf(sum / Float(n))
-                // 音量映射：小声音放大一些，更有动感
-                let v = min(1.0, rms * 3.0)
-                if Date().timeIntervalSince(lastPush) > 0.05 {  // ~20fps
-                    lastPush = Date()
-                    DispatchQueue.main.async { self.level = v }
-                }
-            }
             DispatchQueue.main.async { self.statusText = "已连接，等待音频..." }
         } catch {
             fail("引擎启动失败: \(error.localizedDescription)")
