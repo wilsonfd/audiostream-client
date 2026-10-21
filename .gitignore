@@ -1,0 +1,6 @@
+pc_server/build/
+pc_server/dist/
+pc_server/*.spec
+__pycache__/
+*.pyc
+.DS_Store

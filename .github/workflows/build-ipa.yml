@@ -1,0 +1,52 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:   # 手动触发；也可以改成 push
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 15
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios_client
+        run: xcodegen generate
+
+      - name: Archive
+        working-directory: ios_client
+        run: |
+          xcodebuild archive \
+            -project AudioStreamClient.xcodeproj \
+            -scheme AudioStreamClient \
+            -configuration Release \
+            -archivePath build/AudioStreamClient.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER=""
+
+      - name: Package unsigned IPA
+        working-directory: ios_client
+        run: |
+          mkdir -p payload_tmp/Payload
+          cp -R build/AudioStreamClient.xcarchive/Products/Applications/AudioStreamClient.app payload_tmp/Payload/
+          cd payload_tmp
+          zip -r ../AudioStreamClient-unsigned.ipa Payload
+          cd ..
+          ls -lh AudioStreamClient-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioStreamClient-unsigned
+          path: ios_client/AudioStreamClient-unsigned.ipa
+          if-no-files-found: error
