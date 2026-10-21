@@ -34,6 +34,7 @@ class StreamManager: ObservableObject {
     private var baseSeq: UInt32? = nil
     private var expectedSeq: UInt32 = 0
     private var primed = false
+    private var stopping = false
     private var prebufferPackets: Int = 10
 
     enum LatencyMode: String, CaseIterable {
@@ -144,6 +145,7 @@ class StreamManager: ObservableObject {
     }
 
     private func teardown() {
+        stopping = true
         helloTimer?.invalidate()
         helloTimer = nil
         playerNode?.stop()
@@ -224,6 +226,7 @@ class StreamManager: ObservableObject {
         jitter.removeAll()
         baseSeq = nil
         primed = false
+        stopping = false
         jitterLock.unlock()
 
         let engine = AVAudioEngine()
@@ -278,7 +281,7 @@ class StreamManager: ObservableObject {
 
     // 拉取下一个该播放的包；缺失就补静音
     private func scheduleNext() {
-        guard let fmt = targetFormat, let player = playerNode else { return }
+        guard !stopping, let fmt = targetFormat, let player = playerNode else { return }
 
         var pcm: Data? = nil
         jitterLock.lock()
