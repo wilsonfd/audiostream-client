@@ -112,23 +112,26 @@ class StreamManager: ObservableObject {
 
         conn.stateUpdateHandler = { [weak self] state in
             DispatchQueue.main.async {
+                guard let self = self else { return }
+                // 只处理"当前"连接的状态；旧连接 cancel 后的回调不能误清新连接
+                guard self.connection === conn else { return }
                 switch state {
                 case .ready:
-                    self?.isConnected = true
-                    self?.phase = .waiting
-                    self?.statusText = "已连接，等待音频..."
-                    self?.startHello()
-                    self?.receiveLoop()
+                    self.isConnected = true
+                    self.phase = .waiting
+                    self.statusText = "已连接，等待音频..."
+                    self.startHello()
+                    self.receiveLoop()
                 case .failed(let err):
-                    self?.statusText = "失败: \(err.localizedDescription)"
-                    self?.isConnected = false
-                    self?.phase = .disconnected
-                    self?.teardown()
+                    self.statusText = "失败: \(err.localizedDescription)"
+                    self.isConnected = false
+                    self.phase = .disconnected
+                    self.teardown()
                 case .cancelled:
-                    self?.statusText = "已断开"
-                    self?.isConnected = false
-                    self?.phase = .disconnected
-                    self?.teardown()
+                    self.statusText = "已断开"
+                    self.isConnected = false
+                    self.phase = .disconnected
+                    self.teardown()
                 default: break
                 }
             }
