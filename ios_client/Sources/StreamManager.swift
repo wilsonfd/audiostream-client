@@ -24,6 +24,7 @@ class StreamManager: ObservableObject {
     @Published var isConnected = false
     @Published var statusText = "未连接"
     @Published var metaText: String? = nil
+    @Published var level: Float = 0.0   // 实时播放电平 0~1，驱动外圈波形动画
 
     private var connection: NWConnection?
     private var engine: AVAudioEngine?
@@ -163,6 +164,7 @@ class StreamManager: ObservableObject {
         phase = .disconnected
         statusText = "未连接"
         metaText = nil
+        level = 0.0
         // 立刻把旧引擎引用捕获走并清空，新连接用全新对象；
         // 真正的 stop() 丢后台队列，避免阻塞主线程卡界面
         stopping = true
@@ -276,6 +278,25 @@ class StreamManager: ObservableObject {
             try engine.start()
             self.engine = engine
             self.playerNode = player
+            // 实时电平：从 mixer 输出 tap，算 RMS 驱动外圈波形
+            let mixer = engine.mainMixerNode
+            let tapFmt = mixer.outputFormat(forBus: 0)
+            var lastPush = Date.distantPast
+            mixer.removeTap(onBus: 0)
+            mixer.installTap(onBus: 0, bufferSize: 512, format: tapFmt) { buf, _ in
+                guard let ch = buf.floatChannelData?[0] else { return }
+                let n = Int(buf.frameLength)
+                guard n > 0 else { return }
+                var sum: Float = 0
+                for i in 0..<n { sum += ch[i] * ch[i] }
+                let rms = sqrtf(sum / Float(n))
+                // 音量映射：小声音放大一些，更有动感
+                let v = min(1.0, rms * 3.0)
+                if Date().timeIntervalSince(lastPush) > 0.05 {  // ~20fps
+                    lastPush = Date()
+                    DispatchQueue.main.async { self.level = v }
+                }
+            }
             DispatchQueue.main.async { self.statusText = "已连接，等待音频..." }
         } catch {
             fail("引擎启动失败: \(error.localizedDescription)")
