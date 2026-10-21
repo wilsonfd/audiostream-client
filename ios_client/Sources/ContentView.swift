@@ -100,7 +100,6 @@ struct ContentView: View {
                     Image(systemName: buttonIcon)
                         .font(.system(size: 56, weight: .bold))
                         .foregroundColor(iconColor)
-                        .contentTransition(.symbolEffect(.replace))
                     Text(buttonTitle)
                         .font(.subheadline.weight(.semibold))
                         .foregroundColor(iconColor)
