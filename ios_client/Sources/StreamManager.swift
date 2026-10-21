@@ -13,6 +13,14 @@ import Network
 import AVFoundation
 
 class StreamManager: ObservableObject {
+    enum Phase {
+        case disconnected
+        case connecting
+        case connected
+        // 已连接但还没收到音频
+        case waiting
+    }
+    @Published var phase: Phase = .disconnected
     @Published var isConnected = false
     @Published var statusText = "未连接"
     @Published var metaText: String? = nil
@@ -93,8 +101,10 @@ class StreamManager: ObservableObject {
         disconnect()
         guard !host.isEmpty, let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
             statusText = "IP 或端口无效"
+            phase = .disconnected
             return
         }
+        phase = .connecting
         statusText = "连接中..."
         let params = NWParameters.udp
         let conn = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)
@@ -105,14 +115,19 @@ class StreamManager: ObservableObject {
                 switch state {
                 case .ready:
                     self?.isConnected = true
+                    self?.phase = .waiting
                     self?.statusText = "已连接，等待音频..."
                     self?.startHello()
                     self?.receiveLoop()
                 case .failed(let err):
                     self?.statusText = "失败: \(err.localizedDescription)"
+                    self?.isConnected = false
+                    self?.phase = .disconnected
                     self?.teardown()
                 case .cancelled:
                     self?.statusText = "已断开"
+                    self?.isConnected = false
+                    self?.phase = .disconnected
                     self?.teardown()
                 default: break
                 }
@@ -264,7 +279,10 @@ class StreamManager: ObservableObject {
             if jitter.count >= prebufferPackets {
                 primed = true
                 jitterLock.unlock()
-                DispatchQueue.main.async { self.statusText = "已连接，播放中" }
+                DispatchQueue.main.async {
+                    self.phase = .connected
+                    self.statusText = "已连接，播放中"
+                }
                 primePlayback()
                 return
             }
