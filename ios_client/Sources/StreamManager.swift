@@ -21,9 +21,49 @@ class StreamManager: ObservableObject {
     private var playerNode: AVAudioPlayerNode?
     private var targetFormat: AVAudioFormat?
     private var prebufferBytes: Int = 0
-    private let prebufferTargetBytes: Int     // 开机前预缓冲 ~200ms
+    // 预缓冲目标字节数（根据档位变化）
+    private var prebufferTargetBytes: Int = 48000 * 2 * 2 / 5
+    // 档位：低于此 ms 静音，高于此 ms 恢复
+    private var underrunMuteMs: Double = 80
+    private var underrunResumeMs: Double = 200
     private var receiveQueue = DispatchQueue(label: "audio.recv")
     private var started = false
+
+    enum LatencyMode: String, CaseIterable {
+        case low = "低延迟 (50ms)"
+        case balanced = "平衡 (150ms)"
+        case stable = "高稳定 (300ms)"
+
+        var prebufferBytes: Int {
+            // 48k/16bit/stereo = 192000 bytes/s
+            switch self {
+            case .low:      return 192000 / 20   // 50ms
+            case .balanced: return 192000 / 7     // ~143ms
+            case .stable:   return 192000 / 3     // 333ms
+            }
+        }
+        var muteMs: Double {
+            switch self {
+            case .low: return 20
+            case .balanced: return 60
+            case .stable: return 120
+            }
+        }
+        var resumeMs: Double {
+            switch self {
+            case .low: return 60
+            case .balanced: return 150
+            case .stable: return 250
+            }
+        }
+    }
+    var latencyMode: LatencyMode = .balanced {
+        didSet {
+            prebufferTargetBytes = latencyMode.prebufferBytes
+            underrunMuteMs = latencyMode.muteMs
+            underrunResumeMs = latencyMode.resumeMs
+        }
+    }
 
     // 帧对齐：TCP 是流式，一次 receive 的 data 可能不按帧边界结束。
     // leftover 保存上次没凑够一帧的尾巴，下次和新数据拼起来再切。
@@ -34,8 +74,6 @@ class StreamManager: ObservableObject {
     private var mutedDueToUnderrun = false
 
     init() {
-        // 默认 48k/16bit/stereo，预缓冲 ~200ms = 48000*2*2*0.2 ≈ 38400 字节
-        self.prebufferTargetBytes = 48000 * 2 * 2 / 5
         configureAudioSession()
     }
 
@@ -190,13 +228,11 @@ class StreamManager: ObservableObject {
             let inFlight = Int64(self.enqueuedFrames) - pt.sampleTime
             let inFlightMs = Double(inFlight) / fmt.sampleRate * 1000.0
 
-            if !self.mutedDueToUnderrun && inFlightMs < 80 {
-                // 缓冲快空了，暂停播放避免 underrun 咔哒声
+            if !self.mutedDueToUnderrun && inFlightMs < self.underrunMuteMs {
                 player.pause()
                 self.mutedDueToUnderrun = true
                 DispatchQueue.main.async { self.statusText = "缓冲不足，静音等待..." }
-            } else if self.mutedDueToUnderrun && inFlightMs > 200 {
-                // 缓冲恢复，继续播
+            } else if self.mutedDueToUnderrun && inFlightMs > self.underrunResumeMs {
                 player.play()
                 self.mutedDueToUnderrun = false
                 DispatchQueue.main.async { self.statusText = "已连接，播放中" }
