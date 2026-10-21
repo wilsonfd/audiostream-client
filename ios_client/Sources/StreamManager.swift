@@ -20,14 +20,22 @@ class StreamManager: ObservableObject {
     private var engine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
     private var targetFormat: AVAudioFormat?
-    private var prebufferBytes: Int = 0       // 已预缓冲字节数
-    private let prebufferTargetBytes: Int     // 开机前预缓冲 ~100ms
+    private var prebufferBytes: Int = 0
+    private let prebufferTargetBytes: Int     // 开机前预缓冲 ~200ms
     private var receiveQueue = DispatchQueue(label: "audio.recv")
     private var started = false
 
+    // 帧对齐：TCP 是流式，一次 receive 的 data 可能不按帧边界结束。
+    // leftover 保存上次没凑够一帧的尾巴，下次和新数据拼起来再切。
+    private var leftover = Data()
+    // 已调度但还在播放队列里的帧数（用于检测 underrun）
+    private var enqueuedFrames: AVAudioFrameCount = 0
+    private var watchDogTimer: Timer?
+    private var mutedDueToUnderrun = false
+
     init() {
-        // 默认 48k/16bit/stereo，约 100ms = 48000*2*2*0.1 ≈ 19200 字节
-        self.prebufferTargetBytes = 48000 * 2 * 2 / 10
+        // 默认 48k/16bit/stereo，预缓冲 ~200ms = 48000*2*2*0.2 ≈ 38400 字节
+        self.prebufferTargetBytes = 48000 * 2 * 2 / 5
         configureAudioSession()
     }
 
@@ -159,13 +167,48 @@ class StreamManager: ObservableObject {
             self.playerNode = player
             self.started = false
             self.prebufferBytes = 0
+            self.leftover.removeAll()
+            self.enqueuedFrames = 0
+            self.mutedDueToUnderrun = false
             player.play()
+            startWatchDog()
         } catch {
             fail("引擎启动失败: \(error.localizedDescription)")
         }
     }
 
+    private func startWatchDog() {
+        watchDogTimer?.invalidate()
+        // 每 200ms 检查一次缓冲余量
+        watchDogTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            guard let self = self, let player = self.playerNode, player.isPlaying,
+                  let fmt = self.targetFormat else { return }
+            // 已消耗的帧数
+            guard let pt = player.playerTime else { return }
+            let inFlight = self.enqueuedFrames - pt.timeSample
+            let inFlightMs = Double(inFlight) / fmt.sampleRate * 1000.0
+
+            if !self.mutedDueToUnderrun && inFlightMs < 80 {
+                // 缓冲快空了，暂停播放避免 underrun 咔哒声
+                player.pause()
+                self.mutedDueToUnderrun = true
+                DispatchQueue.main.async { self.statusText = "缓冲不足，静音等待..." }
+            } else if self.mutedDueToUnderrun && inFlightMs > 200 {
+                // 缓冲恢复，继续播
+                player.play()
+                self.mutedDueToUnderrun = false
+                DispatchQueue.main.async { self.statusText = "已连接，播放中" }
+            }
+        }
+    }
+
+    private func stopWatchDog() {
+        watchDogTimer?.invalidate()
+        watchDogTimer = nil
+    }
+
     private func teardownEngine() {
+        stopWatchDog()
         playerNode?.stop()
         engine?.stop()
         engine = nil
@@ -173,6 +216,9 @@ class StreamManager: ObservableObject {
         targetFormat = nil
         started = false
         prebufferBytes = 0
+        leftover.removeAll()
+        enqueuedFrames = 0
+        mutedDueToUnderrun = false
     }
 
     // MARK: - Receive PCM
@@ -194,33 +240,39 @@ class StreamManager: ObservableObject {
 
     private func enqueue(data: Data) {
         guard let fmt = targetFormat,
-              let player = playerNode,
-              let engine = engine else { return }
+              let player = playerNode else { return }
 
-        // 启动前先攒够约 100ms 缓冲，避免一开播就 underrun
+        // 先把上次的 leftover 和新数据拼起来，保证按帧对齐
+        var combined = leftover
+        combined.append(data)
+        let frameSize = Int(fmt.streamDescription.pointee.mBytesPerFrame)
+        let totalFrames = combined.count / frameSize
+        let usableBytes = totalFrames * frameSize
+        leftover = combined.subdata(in: usableBytes..<combined.count)
+        let aligned = combined.subdata(in: 0..<usableBytes)
+
+        // 启动前先攒够预缓冲
         if !started {
-            prebufferBytes += data.count
+            prebufferBytes += aligned.count
             if prebufferBytes < prebufferTargetBytes { return }
             started = true
         }
 
         // 按帧切片调度
-        let frameSize = Int(fmt.streamDescription.pointee.mBytesPerFrame)
         var offset = 0
-        while offset < data.count {
-            let remaining = data.count - offset
-            let frames = min(remaining / frameSize, 8192)  // 单次最多调度 8192 帧
+        while offset < aligned.count {
+            let remaining = aligned.count - offset
+            let frames = min(remaining / frameSize, 4096)
             guard frames > 0 else { break }
             let bytes = frames * frameSize
             guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames)) else { break }
             buf.frameLength = AVAudioFrameCount(frames)
-            data.subdata(in: offset..<offset+bytes).withUnsafeBytes { raw in
-                buf.int16ChannelData?.pointee.initialize(
-                    from: raw.bindMemory(to: Int16.self).baseAddress!,
-                    count: frames * Int(fmt.channelCount)
-                )
+            aligned.subdata(in: offset..<offset+bytes).withUnsafeBytes { raw in
+                guard let src = raw.bindMemory(to: Int16.self).baseAddress else { return }
+                buf.int16ChannelData?.pointee.initialize(from: src, count: frames * Int(fmt.channelCount))
             }
             player.scheduleBuffer(buf, completionHandler: nil)
+            enqueuedFrames += AVAudioFrameCount(frames)
             offset += bytes
         }
     }
