@@ -25,7 +25,7 @@ class StreamManager: ObservableObject {
     private var helloTimer: Timer?
 
     // 每个 UDP 包的帧数（由 PC meta 告知，默认 480=10ms）
-    private var packetFrames: Int = 480
+    private var packetFrames: Int = 240
     private var frameSize: Int = 4
 
     // jitter buffer
@@ -38,22 +38,22 @@ class StreamManager: ObservableObject {
     private var prebufferPackets: Int = 10
 
     enum LatencyMode: String, CaseIterable {
-        case low = "低延迟 (50ms)"
-        case balanced = "平衡 (150ms)"
-        case stable = "高稳定 (300ms)"
-        // 10ms 一个包
+        case low = "极低延迟 (15ms)"
+        case balanced = "平衡 (50ms)"
+        case stable = "高稳定 (150ms)"
+        // 5ms 一个包（PC 端 PACKET_FRAMES=240 @48k）
         var prebufferPackets: Int {
             switch self {
-            case .low:      return 5    // 50ms
-            case .balanced: return 15   // 150ms
-            case .stable:   return 30   // 300ms
+            case .low:      return 3    // 15ms
+            case .balanced: return 10   // 50ms
+            case .stable:   return 30   // 150ms
             }
         }
         // 允许缓冲额外堆积的包数，超过就跳帧
         var maxExtraPackets: Int {
             switch self {
-            case .low:      return 4
-            case .balanced: return 8
+            case .low:      return 3
+            case .balanced: return 6
             case .stable:   return 15
             }
         }
@@ -75,6 +75,8 @@ class StreamManager: ObservableObject {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, options: [.mixWithOthers])
+            // 降低系统音频 IO 缓冲，进一步压低延迟（5ms，设备可能取最接近的支持值）
+            try session.setPreferredIOBufferDuration(0.005)
             try session.setActive(true)
             NotificationCenter.default.addObserver(
                 self, selector: #selector(handleRouteChange),
