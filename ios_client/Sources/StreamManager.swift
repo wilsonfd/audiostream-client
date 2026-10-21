@@ -70,6 +70,9 @@ class StreamManager: ObservableObject {
     private var leftover = Data()
     // 已调度但还在播放队列里的帧数（用于检测 underrun）
     private var enqueuedFrames: AVAudioFrameCount = 0
+    // 当前实际在播放队列里的帧数（watchdog 每 200ms 更新，receive 线程据此丢数据）
+    private var inFlightFrames: Int64 = 0
+    private let stateLock = NSLock()
     private var watchDogTimer: Timer?
     private var mutedDueToUnderrun = false
 
@@ -208,6 +211,7 @@ class StreamManager: ObservableObject {
             self.prebufferBytes = 0
             self.leftover.removeAll()
             self.enqueuedFrames = 0
+            self.inFlightFrames = 0
             self.mutedDueToUnderrun = false
             player.play()
             startWatchDog()
@@ -226,10 +230,11 @@ class StreamManager: ObservableObject {
             guard let nodeTime = player.lastRenderTime,
                   let pt = player.playerTime(forNodeTime: nodeTime) else { return }
             let inFlight = Int64(self.enqueuedFrames) - pt.sampleTime
-            let inFlightMs = Double(inFlight) / fmt.sampleRate * 1000.0
+            self.stateLock.lock()
+            self.inFlightFrames = inFlight
+            self.stateLock.unlock()
 
-            // 目标缓冲 ms（根据档位）
-            let targetMs = Double(self.prebufferTargetBytes) / (fmt.sampleRate * Double(fmt.channelCount) * 2) * 1000.0
+            let inFlightMs = Double(inFlight) / fmt.sampleRate * 1000.0
 
             if self.mutedDueToUnderrun {
                 // 静音等待中：缓冲攒够就恢复
@@ -244,14 +249,6 @@ class StreamManager: ObservableObject {
                     player.pause()
                     self.mutedDueToUnderrun = true
                     DispatchQueue.main.async { self.statusText = "缓冲不足，静音等待..." }
-                }
-                // 缓冲太多就丢弃多余的，把延迟拉回目标值（关键：防止卡顿后延迟累积）
-                else if inFlightMs > targetMs + 60 {
-                    // stop() 会清空所有已 schedule 的 buffer，立刻回到目标延迟
-                    player.stop()
-                    self.enqueuedFrames = 0
-                    player.play()
-                    DispatchQueue.main.async { self.statusText = "延迟已对齐 \(Int(targetMs))ms" }
                 }
             }
         }
@@ -273,6 +270,7 @@ class StreamManager: ObservableObject {
         prebufferBytes = 0
         leftover.removeAll()
         enqueuedFrames = 0
+        inFlightFrames = 0
         mutedDueToUnderrun = false
     }
 
@@ -304,13 +302,39 @@ class StreamManager: ObservableObject {
         let totalFrames = combined.count / frameSize
         let usableBytes = totalFrames * frameSize
         leftover = combined.subdata(in: usableBytes..<combined.count)
-        let aligned = combined.subdata(in: 0..<usableBytes)
+        var aligned = combined.subdata(in: 0..<usableBytes)
 
         // 启动前先攒够预缓冲
         if !started {
             prebufferBytes += aligned.count
             if prebufferBytes < prebufferTargetBytes { return }
             started = true
+        }
+
+        // 关键：延迟固定。直接计算当前播放器队列里还剩多少帧，
+        // 超过目标缓冲就把新数据丢掉（不 schedule）。
+        var curInFlight: Int64 = 0
+        if let nodeTime = player.lastRenderTime,
+           let pt = player.playerTime(forNodeTime: nodeTime) {
+            curInFlight = Int64(enqueuedFrames) - pt.sampleTime
+        }
+        stateLock.lock()
+        inFlightFrames = curInFlight
+        stateLock.unlock()
+        let targetFrames = Int64(Double(prebufferTargetBytes) / Double(frameSize))
+        // 允许浮动到目标的 1.2 倍，超过就丢
+        let maxInFlight = Int64(Double(targetFrames) * 1.2)
+        if curInFlight >= maxInFlight {
+            // 整段丢弃
+            return
+        }
+        // 部分丢弃：只 schedule 到不超过 maxInFlight 为止
+        let allowFrames = maxInFlight - curInFlight
+        var allowedBytes = aligned.count
+        if allowFrames < Int64(totalFrames) {
+            allowedBytes = Int(allowFrames) * frameSize
+            if allowedBytes < 0 { allowedBytes = 0 }
+            aligned = aligned.subdata(in: 0..<allowedBytes)
         }
 
         // 按帧切片调度
