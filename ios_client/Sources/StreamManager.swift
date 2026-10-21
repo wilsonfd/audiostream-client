@@ -69,7 +69,6 @@ class StreamManager: ObservableObject {
                 switch state {
                 case .setup: self?.statusText = "准备..."
                 case .waiting(let err): self?.statusText = "等待: \(err.localizedDescription)"
-                case .prestarting: self?.statusText = "连接中..."
                 case .ready:
                     self?.isConnected = true
                     self?.statusText = "已连接，等待音频..."
@@ -103,15 +102,15 @@ class StreamManager: ObservableObject {
     // MARK: - Header
     private func receiveHeader() {
         // 先读 4 字节大端长度
-        connection?.receive(minimumLength: 4, maximumLength: 4,
-                           completion: { [weak self] maybeData, _, maybeErr in
+        connection?.receive(minimumIncompleteLength: 4, maximumLength: 4,
+                           completion: { [weak self] maybeData, _, _, maybeErr in
             guard let self = self else { return }
             guard let data = maybeData, data.count == 4, maybeErr == nil else {
                 self.fail("读握手头失败")
                 return
             }
             let len = Int(data.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-            self.connection?.receive(minimumLength: len, maximumLength: len,
+            self.connection?.receive(minimumIncompleteLength: len, maximumLength: len,
                                     completion: { meta, _, _, err in
                 guard let meta = meta, err == nil else { self.fail("读握手 JSON 失败"); return }
                 self.handleMeta(data: meta)
@@ -179,7 +178,7 @@ class StreamManager: ObservableObject {
     // MARK: - Receive PCM
     private func receivePCM() {
         // 每次收一段，多大都行（TCP 流式）
-        connection?.receive(minimumLength: 200, maximumLength: 8192,
+        connection?.receive(minimumIncompleteLength: 200, maximumLength: 8192,
                             completion: { [weak self] data, _, _, err in
             guard let self = self else { return }
             if let err = err {
@@ -217,7 +216,7 @@ class StreamManager: ObservableObject {
             buf.frameLength = AVAudioFrameCount(frames)
             data.subdata(in: offset..<offset+bytes).withUnsafeBytes { raw in
                 buf.int16ChannelData?.pointee.initialize(
-                    fromBuffer: raw.bindMemory(to: Int16.self).baseAddress!,
+                    from: raw.bindMemory(to: Int16.self).baseAddress!,
                     count: frames * Int(fmt.channelCount)
                 )
             }
