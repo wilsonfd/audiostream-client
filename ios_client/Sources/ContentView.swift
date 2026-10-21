@@ -9,6 +9,11 @@ struct ContentView: View {
     @StateObject private var manager = StreamManager()
     @State private var ip: String = UserDefaults.standard.string(forKey: "pc_ip") ?? ""
     @State private var port: String = "13579"
+    @State private var latencyMode: StreamManager.LatencyMode = {
+        if let s = UserDefaults.standard.string(forKey: "latency_mode"),
+           let m = StreamManager.LatencyMode(rawValue: s) { return m }
+        return .balanced
+    }()
 
     var body: some View {
         NavigationView {
@@ -29,6 +34,17 @@ struct ContentView: View {
                         }
                     }
                     .foregroundColor(manager.isConnected ? .red : .accentColor)
+
+                    Picker("延迟模式", selection: $latencyMode) {
+                        ForEach(StreamManager.LatencyMode.allCases, id: \.self) { m in
+                            Text(m.rawValue).tag(m)
+                        }
+                    }
+                    .onChange(of: latencyMode) { _, new in
+                        manager.latencyMode = new
+                        UserDefaults.standard.set(new.rawValue, forKey: "latency_mode")
+                    }
+                    .onAppear { manager.latencyMode = latencyMode }
                 }
 
                 Section("状态") {
