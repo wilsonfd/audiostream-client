@@ -220,7 +220,7 @@ class StreamManager: ObservableObject {
         watchDogTimer?.invalidate()
         // 每 200ms 检查一次缓冲余量
         watchDogTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            guard let self = self, let player = self.playerNode, player.isPlaying,
+            guard let self = self, let player = self.playerNode,
                   let fmt = self.targetFormat else { return }
             // 已消耗的帧数：用 playerNode 自己的 lastRenderTime
             guard let nodeTime = player.lastRenderTime,
@@ -228,14 +228,31 @@ class StreamManager: ObservableObject {
             let inFlight = Int64(self.enqueuedFrames) - pt.sampleTime
             let inFlightMs = Double(inFlight) / fmt.sampleRate * 1000.0
 
-            if !self.mutedDueToUnderrun && inFlightMs < self.underrunMuteMs {
-                player.pause()
-                self.mutedDueToUnderrun = true
-                DispatchQueue.main.async { self.statusText = "缓冲不足，静音等待..." }
-            } else if self.mutedDueToUnderrun && inFlightMs > self.underrunResumeMs {
-                player.play()
-                self.mutedDueToUnderrun = false
-                DispatchQueue.main.async { self.statusText = "已连接，播放中" }
+            // 目标缓冲 ms（根据档位）
+            let targetMs = Double(self.prebufferTargetBytes) / (fmt.sampleRate * Double(fmt.channelCount) * 2) * 1000.0
+
+            if self.mutedDueToUnderrun {
+                // 静音等待中：缓冲攒够就恢复
+                if inFlightMs > self.underrunResumeMs {
+                    player.play()
+                    self.mutedDueToUnderrun = false
+                    DispatchQueue.main.async { self.statusText = "已连接，播放中" }
+                }
+            } else {
+                // 正常播放中：缓冲太低就静音
+                if inFlightMs < self.underrunMuteMs {
+                    player.pause()
+                    self.mutedDueToUnderrun = true
+                    DispatchQueue.main.async { self.statusText = "缓冲不足，静音等待..." }
+                }
+                // 缓冲太多就丢弃多余的，把延迟拉回目标值（关键：防止卡顿后延迟累积）
+                else if inFlightMs > targetMs + 60 {
+                    // stop() 会清空所有已 schedule 的 buffer，立刻回到目标延迟
+                    player.stop()
+                    self.enqueuedFrames = 0
+                    player.play()
+                    DispatchQueue.main.async { self.statusText = "延迟已对齐 \(Int(targetMs))ms" }
+                }
             }
         }
     }
