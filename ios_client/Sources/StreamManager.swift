@@ -73,6 +73,7 @@ class StreamManager: ObservableObject {
         }
     }
     private var maxExtraPackets: Int = 8
+    private var epoch: UInt64 = 0
 
     init() {
         configureAudioSession()
@@ -154,13 +155,30 @@ class StreamManager: ObservableObject {
     func disconnect() {
         helloTimer?.invalidate()
         helloTimer = nil
-        connection?.cancel()
+        let old = connection
         connection = nil
-        teardown()
-        DispatchQueue.main.async {
-            self.isConnected = false
-            self.statusText = "未连接"
-            self.metaText = nil
+        old?.cancel()
+        // 立即在主线程重置 UI，按钮马上可点
+        isConnected = false
+        phase = .disconnected
+        statusText = "未连接"
+        metaText = nil
+        // 立刻把旧引擎引用捕获走并清空，新连接用全新对象；
+        // 真正的 stop() 丢后台队列，避免阻塞主线程卡界面
+        stopping = true
+        let oldEngine = engine
+        let oldPlayer = playerNode
+        engine = nil
+        playerNode = nil
+        targetFormat = nil
+        jitterLock.lock()
+        jitter.removeAll()
+        baseSeq = nil
+        primed = false
+        jitterLock.unlock()
+        receiveQueue.async {
+            oldPlayer?.stop()
+            oldEngine?.stop()
         }
     }
 
@@ -352,7 +370,7 @@ class StreamManager: ObservableObject {
             self.statusText = msg
             self.isConnected = false
         }
-        teardown()
+        receiveQueue.async { self.teardown() }
         connection?.cancel()
         connection = nil
     }
