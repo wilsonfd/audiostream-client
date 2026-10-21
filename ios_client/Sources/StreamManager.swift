@@ -77,6 +77,7 @@ class StreamManager: ObservableObject {
                 switch state {
                 case .setup: self?.statusText = "准备..."
                 case .waiting(let err): self?.statusText = "等待: \(err.localizedDescription)"
+                case .preparing: self?.statusText = "连接中..."
                 case .ready:
                     self?.isConnected = true
                     self?.statusText = "已连接，等待音频..."
@@ -182,10 +183,11 @@ class StreamManager: ObservableObject {
         // 每 200ms 检查一次缓冲余量
         watchDogTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             guard let self = self, let player = self.playerNode, player.isPlaying,
-                  let fmt = self.targetFormat else { return }
+                  let fmt = self.targetFormat, let engine = self.engine else { return }
             // 已消耗的帧数
-            guard let pt = player.playerTime else { return }
-            let inFlight = self.enqueuedFrames - pt.timeSample
+            guard let now = engine.renderTime,
+                  let pt = player.playerTime(for: now) else { return }
+            let inFlight = self.enqueuedFrames - pt.sampleTime
             let inFlightMs = Double(inFlight) / fmt.sampleRate * 1000.0
 
             if !self.mutedDueToUnderrun && inFlightMs < 80 {
