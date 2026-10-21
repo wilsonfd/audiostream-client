@@ -187,7 +187,7 @@ class StreamManager: ObservableObject {
             // 已消耗的帧数：用 playerNode 自己的 lastRenderTime
             guard let nodeTime = player.lastRenderTime,
                   let pt = player.playerTime(forNodeTime: nodeTime) else { return }
-            let inFlight = self.enqueuedFrames - pt.sampleTime
+            let inFlight = Int64(self.enqueuedFrames) - pt.sampleTime
             let inFlightMs = Double(inFlight) / fmt.sampleRate * 1000.0
 
             if !self.mutedDueToUnderrun && inFlightMs < 80 {
