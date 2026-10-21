@@ -82,13 +82,20 @@ struct ContentView: View {
                         .frame(width: 180, height: 180)
                 }
 
-                // 已连接：脉冲光环
+                // 已连接：实时电平环（随声音跳动）
                 if manager.phase == .connected {
-                    Circle().fill(Color.white.opacity(0.18))
+                    Circle()
+                        .stroke(Color.white.opacity(0.6), lineWidth: 4)
                         .frame(width: 180, height: 180)
-                        .scaleEffect(pulse ? 1.18 : 1.0)
-                        .opacity(pulse ? 0.0 : 0.5)
-                        .onAppear { withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { pulse = true } }
+                        .scaleEffect(1.0 + CGFloat(manager.level) * 0.35)
+                        .opacity(0.3 + Double(manager.level) * 0.6)
+                        .animation(.easeOut(duration: 0.08), value: manager.level)
+                    Circle()
+                        .stroke(Color.white.opacity(0.3), lineWidth: 3)
+                        .frame(width: 180, height: 180)
+                        .scaleEffect(1.0 + CGFloat(manager.level) * 0.6)
+                        .opacity(0.2 + Double(manager.level) * 0.4)
+                        .animation(.easeOut(duration: 0.12), value: manager.level)
                 }
 
                 Circle()
